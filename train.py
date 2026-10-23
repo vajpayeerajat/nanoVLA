@@ -135,11 +135,11 @@ def main():
     
         lr = optimizer.param_groups[1]["lr"]
         loss_sum, loss_n = loss_sum + loss.item(), loss_n + 1
-        print(f"step {step:6d}/{cfg.max_steps}  | loss {loss.item():.4f} | grad {grad_norm.item():.2f} | lr {lr:.2e} ", end = '\r')
         if step % cfg.log_interval == 0:
             dt = time.time() - t0
             t0 = time.time()
             # Mean over the interval, so it is as smooth as the val loss (mean over val_batches).
+            print(f"step {step:6d}/{cfg.max_steps}  | loss {loss.item():.4f} | grad {grad_norm.item():.2f} | lr {lr:.2e} | it/sec {cfg.log_interval / dt:.2f}", end = '\r')
             writer.add_scalar("loss/train", loss_sum / loss_n, step)
             loss_sum, loss_n = 0.0, 0
             writer.add_scalar("train/grad_norm", grad_norm.item(), step)
