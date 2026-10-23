@@ -27,21 +27,20 @@ class VisionEncoder(nn.Module):
     """[B, n_cams, 3, H, W] uint8 -> [B, n_cams * tokens_per_cam, out_dim].
 
     SigLIP patch tokens, optionally fused patch by patch with a second encoder (DINOv3, `cfg.dino_model`) in `fuse`,
-    then average-pooled.
+    then average-pooled. With `cfg.vision_model = ""` the DINO encoder is used alone, in SigLIP's place.
     """
 
     def __init__(self, cfg):
         super().__init__()
-        self.siglip = SiglipVisionModel.from_pretrained(cfg.vision_model, dtype=torch.float32)
+        assert cfg.vision_model or cfg.dino_model, "need at least one vision encoder"
+        self.siglip = SiglipVisionModel.from_pretrained(cfg.vision_model, dtype=torch.float32) if cfg.vision_model else None
         self.pool = cfg.image_pool
-        self.out_dim = self.siglip.config.hidden_size
-        grid = cfg.image_size // self.siglip.config.patch_size
-        self.tokens_per_cam = (grid // self.pool) ** 2
 
         self.dino = None
         if cfg.dino_model:
             self.dino = AutoModel.from_pretrained(cfg.dino_model, dtype=torch.float32)
-            assert self.dino.config.patch_size == self.siglip.config.patch_size, "patch grids of SigLIP and DINO differ"
+            if self.siglip is not None:
+                assert self.dino.config.patch_size == self.siglip.config.patch_size, "patch grids of SigLIP and DINO differ"
             self.dino_prefix = 1 + self.dino.config.num_register_tokens  # CLS + registers come before the patches
             self.dino_dim = self.dino.config.hidden_size
             self.freeze_dino = cfg.freeze_dino
@@ -49,6 +48,11 @@ class VisionEncoder(nn.Module):
                 self.dino.requires_grad_(False)
             self.register_buffer("dino_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
             self.register_buffer("dino_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+
+        main = self.siglip if self.siglip is not None else self.dino
+        self.out_dim = main.config.hidden_size
+        grid = cfg.image_size // main.config.patch_size
+        self.tokens_per_cam = (grid // self.pool) ** 2
 
     def pretrained_modules(self):
         return [m for m in (self.siglip, self.dino) if m is not None]
@@ -72,9 +76,12 @@ class VisionEncoder(nn.Module):
     def forward(self, images):
         b, n = images.shape[:2]
         x = images.flatten(0, 1).float() / 255.0
-        tokens = self.siglip(pixel_values=(x - 0.5) / 0.5).last_hidden_state  # [B*n, grid*grid, D]
-        if self.dino is not None:
-            tokens = self.fuse(tokens, self.dino_tokens(x))
+        if self.siglip is None:
+            tokens = self.dino_tokens(x)  # DINO only
+        else:
+            tokens = self.siglip(pixel_values=(x - 0.5) / 0.5).last_hidden_state  # [B*n, grid*grid, D]
+            if self.dino is not None:
+                tokens = self.fuse(tokens, self.dino_tokens(x))
         if self.pool > 1:
             g = int(math.isqrt(tokens.shape[1]))
             tokens = tokens.transpose(1, 2).unflatten(2, (g, g))
@@ -144,7 +151,7 @@ class NanoVLA(nn.Module):
         self.vision_proj = nn.Sequential(nn.Linear(self.vision.out_dim, lm_dim), nn.GELU(), nn.Linear(lm_dim, lm_dim))
         self.cam_embed = nn.Parameter(torch.zeros(len(cfg.cameras), 1, lm_dim))
         self.expert = ActionExpert(cfg, ctx_dim=lm_dim)
-        if cfg.freeze_vision:
+        if cfg.freeze_vision and self.vision.siglip is not None:
             self.vision.siglip.requires_grad_(False)
 
     def backbone_parameters(self):

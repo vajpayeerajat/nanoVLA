@@ -22,15 +22,16 @@ class Config:
     augment: bool = True
 
     # --- model ---
-    vision_model: str = "google/siglip-base-patch16-224"
+    vision_model: str = ""  # R1: no SigLIP, DINOv3 alone ("google/siglip-base-patch16-224" in the baseline)
     lm_model: str = "HuggingFaceTB/SmolLM2-135M"
     lm_num_layers: int = 16  # keep only the first N LM layers (SmolVLA-style); 0 = all
     image_pool: int = 2  # average-pool the 14x14 patch grid by this factor -> 49 tokens per camera
     freeze_vision: bool = False  # freezes SigLIP only (fusion layers stay trainable)
     # Second vision encoder fused with SigLIP patch by patch ("" = SigLIP only). DINOv3 B/16 at 224 gives the same
     # 14x14 grid as SigLIP B/16, so patch i of both encoders covers the same image region.
-    dino_model: str = ""
-    freeze_dino: bool = True
+    dino_model: str = "facebook/dinov3-vitb16-pretrain-lvd1689m"
+    # R1: trained like SigLIP in the baseline (lr * backbone_lr_scale), so R0 vs R1 compares only the encoder.
+    freeze_dino: bool = False
     expert_dim: int = 512
     expert_layers: int = 6
     expert_heads: int = 8

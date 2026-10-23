@@ -253,7 +253,7 @@ class NanoBackend:
         if tuple(self.cfg.cameras) != CAMERA_KEYS:
             raise ValueError(f"expected cameras {CAMERA_KEYS}, checkpoint has {self.cfg.cameras}")
         self.device, self.num_steps = device, num_steps
-        vision = self.cfg.vision_model.split('/')[-1] + (f" + {self.cfg.dino_model.split('/')[-1]}" if self.cfg.dino_model else "")
+        vision = " + ".join(n.split("/")[-1] for n in (self.cfg.vision_model, self.cfg.dino_model) if n)
         self.label = (f"nanoVLA ({vision} + {self.cfg.lm_model.split('/')[-1]}, "
                       f"{self.cfg.lm_num_layers or 'all'} LM layers, PyTorch)")
         tpc = self.model.vision.tokens_per_cam

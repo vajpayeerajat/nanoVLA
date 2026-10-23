@@ -1,5 +1,7 @@
 # nanoVLA
 
+> **Branch `r1_dinov3_only`** — reference run R1: DINOv3 ViT-B/16 replaces SigLIP as the only vision encoder (same 14×14 patch grid at 224 px, same 49 pooled tokens per camera). It is trained at `lr * backbone_lr_scale`, exactly like SigLIP in the baseline, so R0 vs R1 compares only the encoder. `--freeze_dino=true` gives the frozen variant. The weights are gated on Hugging Face: accept the license on the model page and run `huggingface-cli login` once.
+
 A small vision-language-action model for the Unitree G1 + Dex3 dataset (`splitted_lerobot_and_school`, 28-dim upper body, 3 cameras).
 
 SigLIP-base (3 cameras × 49 tokens) + SmolLM2-135M (first 16 layers) → small transformer action expert trained with flow matching (pi0-style). It predicts 50-step action chunks: arm joints as deltas from the current state, hand joints as absolute targets. All images become tokens in `VisionEncoder` ([nanovla/model.py](nanovla/model.py)), so other encoders (e.g. DINOv2) and fusion methods plug in there.
