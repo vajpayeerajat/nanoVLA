@@ -12,6 +12,7 @@ Differences from the pi05 version, all due to the architecture:
   - The prompt is the bare instruction (no "Task: ..., State: ...; Action:" template), so prompt:template is 0
     unless --prompt_prefix is set.
   - Camera removal drops the camera's tokens from attention (image_mask = False), as pi05 does.
+  - With a depth branch (cfg.depth_model), "-depth" switches the depth embedding off and keeps the RGB tokens.
 
 What is measured, per sample (frames sampled across episodes of every task):
 
@@ -253,7 +254,9 @@ class NanoBackend:
         if tuple(self.cfg.cameras) != CAMERA_KEYS:
             raise ValueError(f"expected cameras {CAMERA_KEYS}, checkpoint has {self.cfg.cameras}")
         self.device, self.num_steps = device, num_steps
-        self.label = (f"nanoVLA ({self.cfg.vision_model.split('/')[-1]} + {self.cfg.lm_model.split('/')[-1]}, "
+        self.has_depth = getattr(self.model.vision, "depth", None) is not None
+        vision = self.cfg.vision_model.split("/")[-1] + (f" + depth ({self.cfg.depth_model.split('/')[-1]})" if self.has_depth else "")
+        self.label = (f"nanoVLA ({vision} + {self.cfg.lm_model.split('/')[-1]}, "
                       f"{self.cfg.lm_num_layers or 'all'} LM layers, PyTorch)")
         tpc = self.model.vision.tokens_per_cam
         self.grid = math.isqrt(tpc)
@@ -303,7 +306,14 @@ class NanoBackend:
         return (v.float() - (nz - a)).square().unflatten(0, (b, r))  # [B, R, H, D]
 
     @torch.no_grad()
-    def losses(self, batch, noise, t):
+    def losses(self, batch, noise, t, use_depth=True):
+        self.model.vision.use_depth = use_depth
+        try:
+            return self._losses(batch, noise, t)
+        finally:
+            self.model.vision.use_depth = True
+
+    def _losses(self, batch, noise, t):
         ctx, pad = self.model.encode(batch["images"], batch["input_ids"], batch["attention_mask"], batch["image_mask"])
         se = self._sqerr(ctx, pad, batch["state"], batch["actions"], torch.from_numpy(noise).to(self.device),
                          torch.from_numpy(t).to(self.device))
@@ -494,6 +504,11 @@ def analyse(args):
             row[f"loss[{v}]"] = float(per_dim[vi, :REAL_DIM].mean())
             for g, sl in ACTION_GROUPS.items():
                 row[f"loss[{v}]_{g}"] = float(per_dim[vi, sl].mean())
+        if backend.has_depth:  # depth embedding off, RGB and everything else as in base
+            no_depth = backend.losses(backend.batch([items[0]]), noise, times, use_depth=False)[0]
+            row["loss[-depth]"] = float(no_depth[:REAL_DIM].mean())
+            for g, sl in ACTION_GROUPS.items():
+                row[f"loss[-depth]_{g}"] = float(no_depth[sl].mean())
 
         # 2) sampled actions (base + swapped prompt) vs GT and the hold-still baseline, in robot units
         sampled = backend.sample(backend.batch([items[0], items[-1]]), sample_noise)
@@ -581,7 +596,8 @@ def summarize(df, meta):
         p: {g: float(d[f"mae_short_{g}"].mean() / max(d[f"hold_short_{g}"].mean(), 1e-9)) for g in ("right_arm", "right_hand")}
         for p, d in df.groupby("phase")}
     s["ablation"] = {v: {"all": _rel(df, v), **{g: _rel(df, v, group=g) for g in ("right_arm", "right_hand")}}
-                     for v in ("-ego_view", "-left_wrist", "-right_wrist", "-all_cameras", "scene_swap", "-state")}
+                     for v in ("-ego_view", "-left_wrist", "-right_wrist", "-all_cameras", "scene_swap", "-state",
+                               *(["-depth"] if "loss[-depth]" in df.columns else []))}
     # Instruction matters only where it disambiguates: frames with both octopi visible on the ego view.
     two = (df["area_pink"] >= MIN_OBJ_AREA) & (df["area_blue"] >= MIN_OBJ_AREA)
     one = ~two
@@ -661,6 +677,12 @@ def verdicts(s):
               + (" -> the cameras are redundant; none is individually essential." if max(cams.values()) < NEGLIGIBLE <= vision
                  else "")))
     v.append(("inputs", "INFO", f"Replacing the state with the train-mean state: loss {_fmt(sd, True)}"))
+    if "-depth" in abl:
+        dd = abl["-depth"]
+        st = "INFO" if dd["all"] >= NEGLIGIBLE else "WARN"
+        v.append(("inputs", st, f"Depth map switched off (RGB kept): loss {_fmt(dd['all'], True)} (right arm "
+                                f"{_fmt(dd['right_arm'], True)}, right hand {_fmt(dd['right_hand'], True)})"
+                                + (" -> the depth branch is barely used." if st == "WARN" else ".")))
     if vision < NEGLIGIBLE:
         acts.append("Vision is not used. Add image augmentation and object-position diversity; consider a "
                     "higher-resolution ego view or less image-token pooling (image_pool).")
@@ -848,8 +870,11 @@ def make_figures(df, cams_to_plot, out_dir, meta):
     abl = [("-ego_view", "no ego_view"), ("-left_wrist", "no left_wrist"), ("-right_wrist", "no right_wrist"),
            ("-all_cameras", "no cameras"), ("scene_swap", "other episode's scene"), ("-state", "mean state"),
            ("swap_prompt", "other instruction")]
-    d = np.array([100 * _rel(df, v) for v, _ in abl])
     colors = ["#4C72B0"] * 5 + ["#DD8452", "#C44E52"]
+    if "loss[-depth]" in df.columns:
+        abl.insert(5, ("-depth", "no depth (RGB kept)"))
+        colors.insert(5, "#8172B3")
+    d = np.array([100 * _rel(df, v) for v, _ in abl])
     ax.barh([lab for _, lab in abl], d, color=colors)
     ax.axvspan(-100 * NEGLIGIBLE, 100 * NEGLIGIBLE, color="0.92", zorder=0, label=f"negligible (±{100 * NEGLIGIBLE:.0f}%)")
     ax.axvline(0, color="k", lw=0.8)
@@ -1010,6 +1035,9 @@ def write_report(s, df, out_dir):
     L += ["", f"All three cameras removed: **{_fmt(s['ablation']['-all_cameras']['all'], True)}**; cameras showing "
           f"another episode's scene: **{_fmt(s['ablation']['scene_swap']['all'], True)}** (right arm "
           f"{_fmt(s['ablation']['scene_swap']['right_arm'], True)}, right hand {_fmt(s['ablation']['scene_swap']['right_hand'], True)}).",
+          *([f"", f"Depth map switched off, RGB kept: **{_fmt(s['ablation']['-depth']['all'], True)}** (right arm "
+             f"{_fmt(s['ablation']['-depth']['right_arm'], True)}, right hand {_fmt(s['ablation']['-depth']['right_hand'], True)})."]
+            if "-depth" in s["ablation"] else []),
           "", "Prompt:task 'removed' = instruction swapped for the other task; state 'removed' = train-mean state. Gradient "
           "shares show sensitivity; the loss change shows what the model actually needs. Trust a conclusion when both agree.", "",
           "### By phase (gradient share, all joints)", "", "| phase | " + " | ".join(INPUT_GROUPS) + " |",
@@ -1059,7 +1087,7 @@ def compare(dirs, out):
     row("val loss", lambda r: f"{r['val_loss']:.4f}")
     for g in ("right_arm", "right_hand"):
         row(f"skill {g} (first {SHORT_HORIZON}, lower better)", lambda r, g=g: f"{r['accuracy'][f'{g}_short']['skill']:.2f}")
-    for v in ("-all_cameras", "scene_swap", "-state"):
+    for v in ("-all_cameras", "scene_swap", "-state", "-depth"):
         row(f"loss change {v}", lambda r, v=v: _fmt(r["ablation"][v]["all"], True))
     row("instruction swap, both octopi visible", lambda r: _fmt(r["language"]["swap_two_object"], True))
     row("target-object CAM lift (approach)", lambda r: _fmt(r["grounding"]["all"]["approach_target_lift_median"]))
