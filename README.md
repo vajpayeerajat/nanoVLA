@@ -1,5 +1,7 @@
 # nanoVLA
 
+> **Branch `f2_early_fusion`** — F2 early fusion: **concatenate**. SigLIP and DINOv3 features are concatenated per patch (768 + 768) and the existing MLP projector maps them into the LM, as in Prismatic / OpenVLA. DINOv3 ViT-B/16 (frozen) runs at 224 px on every camera, giving the same 14×14 patch grid as SigLIP. Its weights are gated on Hugging Face: accept the license on the model page and run `huggingface-cli login` once.
+
 A small vision-language-action model for the Unitree G1 + Dex3 dataset (`splitted_lerobot_and_school`, 28-dim upper body, 3 cameras).
 
 SigLIP-base (3 cameras × 49 tokens) + SmolLM2-135M (first 16 layers) → small transformer action expert trained with flow matching (pi0-style). It predicts 50-step action chunks: arm joints as deltas from the current state, hand joints as absolute targets. All images become tokens in `VisionEncoder` ([nanovla/model.py](nanovla/model.py)), so other encoders (e.g. DINOv2) and fusion methods plug in there.

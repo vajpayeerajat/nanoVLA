@@ -49,6 +49,9 @@ class VisionEncoder(nn.Module):
                 self.dino.requires_grad_(False)
             self.register_buffer("dino_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
             self.register_buffer("dino_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+            # F2 (concat): [siglip ; norm(dino)] per patch, as in Prismatic / OpenVLA. vision_proj maps the result.
+            self.dino_norm = nn.LayerNorm(self.dino_dim)
+            self.out_dim += self.dino_dim
 
     def pretrained_modules(self):
         return [m for m in (self.siglip, self.dino) if m is not None]
@@ -66,8 +69,8 @@ class VisionEncoder(nn.Module):
             return self.dino(pixel_values=x).last_hidden_state[:, self.dino_prefix :]
 
     def fuse(self, siglip_tokens, dino_tokens):
-        """[N, P, D_siglip], [N, P, D_dino] -> [N, P, out_dim]. Each early-fusion branch implements this."""
-        raise NotImplementedError("no fusion method on this branch")
+        """F2: concatenate SigLIP and DINO features of the same patch."""
+        return torch.cat([siglip_tokens, self.dino_norm(dino_tokens)], dim=-1)
 
     def forward(self, images):
         b, n = images.shape[:2]

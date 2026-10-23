@@ -29,7 +29,7 @@ class Config:
     freeze_vision: bool = False  # freezes SigLIP only (fusion layers stay trainable)
     # Second vision encoder fused with SigLIP patch by patch ("" = SigLIP only). DINOv3 B/16 at 224 gives the same
     # 14x14 grid as SigLIP B/16, so patch i of both encoders covers the same image region.
-    dino_model: str = ""
+    dino_model: str = "facebook/dinov3-vitb16-pretrain-lvd1689m"
     freeze_dino: bool = True
     expert_dim: int = 512
     expert_layers: int = 6
