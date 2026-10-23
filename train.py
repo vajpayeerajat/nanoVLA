@@ -144,6 +144,8 @@ def main():
             loss_sum, loss_n = 0.0, 0
             writer.add_scalar("train/grad_norm", grad_norm.item(), step)
             writer.add_scalar("train/lr", lr, step)
+            if model.vision.last_gate is not None:
+                writer.add_scalar("train/dino_gate", model.vision.last_gate.float().mean().item(), step)
             writer.add_scalar("train/steps_per_sec", cfg.log_interval / dt, step)
 
         if step % cfg.val_interval == 0 or step == cfg.max_steps:

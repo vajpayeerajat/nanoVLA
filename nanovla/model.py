@@ -49,6 +49,16 @@ class VisionEncoder(nn.Module):
                 self.dino.requires_grad_(False)
             self.register_buffer("dino_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
             self.register_buffer("dino_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+            # F3 (gated): siglip + sigmoid(gate([siglip ; dino])) * proj(dino), one gate per patch. proj starts at
+            # zero (training starts from the SigLIP-only model) and the gate at 0.5.
+            self.dino_norm = nn.LayerNorm(self.dino_dim)
+            self.dino_proj = nn.Linear(self.dino_dim, self.out_dim)
+            nn.init.zeros_(self.dino_proj.weight)
+            nn.init.zeros_(self.dino_proj.bias)
+            self.dino_gate = nn.Linear(self.out_dim + self.dino_dim, 1)
+            nn.init.zeros_(self.dino_gate.weight)
+            nn.init.zeros_(self.dino_gate.bias)
+            self.last_gate = None
 
     def pretrained_modules(self):
         return [m for m in (self.siglip, self.dino) if m is not None]
@@ -66,8 +76,11 @@ class VisionEncoder(nn.Module):
             return self.dino(pixel_values=x).last_hidden_state[:, self.dino_prefix :]
 
     def fuse(self, siglip_tokens, dino_tokens):
-        """[N, P, D_siglip], [N, P, D_dino] -> [N, P, out_dim]. Each early-fusion branch implements this."""
-        raise NotImplementedError("no fusion method on this branch")
+        """F3: add the projected DINO token, scaled by a gate in (0, 1) computed from both tokens of the patch."""
+        dino = self.dino_norm(dino_tokens)
+        gate = torch.sigmoid(self.dino_gate(torch.cat([siglip_tokens, dino], dim=-1)))  # [N, P, 1]
+        self.last_gate = gate.detach()  # where DINO is used; logged by train.py
+        return siglip_tokens + gate * self.dino_proj(dino)
 
     def forward(self, images):
         b, n = images.shape[:2]
