@@ -26,7 +26,11 @@ class Config:
     lm_model: str = "HuggingFaceTB/SmolLM2-135M"
     lm_num_layers: int = 16  # keep only the first N LM layers (SmolVLA-style); 0 = all
     image_pool: int = 2  # average-pool the 14x14 patch grid by this factor -> 49 tokens per camera
-    freeze_vision: bool = False
+    freeze_vision: bool = False  # freezes SigLIP only (the depth embedding stays trainable)
+    # Depth: a frozen monocular depth model runs on the camera images; its depth map is embedded per SigLIP patch
+    # (16x16 px -> one token) and added to the SigLIP tokens. "" = SigLIP only.
+    depth_model: str = "depth-anything/Depth-Anything-V2-Base-hf"
+    depth_cameras: tuple = ("ego_view", "ego_left", "ego_right")  # e.g. --depth_cameras=ego_view,ego_right
     expert_dim: int = 512
     expert_layers: int = 6
     expert_heads: int = 8

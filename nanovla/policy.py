@@ -38,7 +38,8 @@ class Policy:
     @classmethod
     def from_checkpoint(cls, path, device="cuda"):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        cfg = Config(**{k: tuple(v) if isinstance(v, list) else v for k, v in ckpt["config"].items()})
+        saved = {"depth_model": ""} | ckpt["config"]  # checkpoints from before depth support are SigLIP only
+        cfg = Config(**{k: tuple(v) if isinstance(v, list) else v for k, v in saved.items()})
         model = NanoVLA(cfg)
         model.load_state_dict(ckpt["model"])
         tokenizer = AutoTokenizer.from_pretrained(cfg.lm_model)

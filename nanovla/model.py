@@ -16,25 +16,79 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, SiglipVisionModel
+from transformers import AutoModel, AutoModelForDepthEstimation, SiglipVisionModel
+
+
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 class VisionEncoder(nn.Module):
-    """[B, n_cams, 3, H, W] uint8 -> [B, n_cams * tokens_per_cam, out_dim]."""
+    """[B, n_cams, 3, H, W] uint8 -> [B, n_cams * tokens_per_cam, out_dim].
+
+    SigLIP patch tokens, plus (if `cfg.depth_model`) an embedding of the depth map of the same patch from a frozen
+    monocular depth model, then average-pooled.
+    """
 
     def __init__(self, cfg):
         super().__init__()
         self.siglip = SiglipVisionModel.from_pretrained(cfg.vision_model, dtype=torch.float32)
         self.pool = cfg.image_pool
         self.out_dim = self.siglip.config.hidden_size
-        grid = cfg.image_size // self.siglip.config.patch_size
+        patch = self.siglip.config.patch_size
+        grid = cfg.image_size // patch
         self.tokens_per_cam = (grid // self.pool) ** 2
+
+        self.depth = None
+        self.use_depth = True  # switched off by the Grad-CAM "-depth" ablation
+        if cfg.depth_model:
+            self.depth = AutoModelForDepthEstimation.from_pretrained(cfg.depth_model, dtype=torch.float32)
+            self.depth.requires_grad_(False)
+            self.depth_cams = [i for i, c in enumerate(cfg.cameras) if c in cfg.depth_cameras]
+            assert self.depth_cams, f"depth_cameras {cfg.depth_cameras} not in cameras {cfg.cameras}"
+            # One token per SigLIP patch: a patch x patch block of the depth map -> out_dim. Zero-initialised, so
+            # training starts exactly from the SigLIP-only model.
+            self.depth_embed = nn.Conv2d(1, self.out_dim, kernel_size=patch, stride=patch)
+            nn.init.zeros_(self.depth_embed.weight)
+            nn.init.zeros_(self.depth_embed.bias)
+            self.register_buffer("depth_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
+            self.register_buffer("depth_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+
+    def pretrained_modules(self):
+        """Pretrained weights that train at lr * backbone_lr_scale (the depth model is frozen)."""
+        return [self.siglip]
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.depth is not None:
+            self.depth.eval()  # frozen: always in inference mode
+        return self
+
+    @torch.no_grad()
+    def depth_map(self, x):
+        """x: [N, 3, H, W] in [0, 1] -> [N, 1, H, W] relative inverse depth, standardised per image over the real
+        image pixels (Depth Anything's scale differs from image to image); 0 on the black letterbox bands."""
+        d = self.depth(pixel_values=(x - self.depth_mean) / self.depth_std).predicted_depth.float()  # [N, H, W]
+        if d.shape[-2:] != x.shape[-2:]:
+            d = F.interpolate(d[:, None], size=x.shape[-2:], mode="bilinear", align_corners=False)[:, 0]
+        thr = 16 / 255  # letterbox bands are near-black after lossy re-encoding
+        valid = (x.amax(dim=(1, 3)) > thr)[:, :, None] & (x.amax(dim=(1, 2)) > thr)[:, None, :]  # [N, H, W]
+        n = valid.sum((1, 2), keepdim=True).clamp(min=1)
+        mean = (d * valid).sum((1, 2), keepdim=True) / n
+        std = (((d - mean) * valid) ** 2).sum((1, 2), keepdim=True).div(n).sqrt()
+        return (((d - mean) / (std + 1e-6)) * valid)[:, None]
 
     def forward(self, images):
         b, n = images.shape[:2]
         x = images.flatten(0, 1).float() / 255.0
-        x = (x - 0.5) / 0.5  # SigLIP normalization
-        tokens = self.siglip(pixel_values=x).last_hidden_state  # [B*n, grid*grid, D]
+        tokens = self.siglip(pixel_values=(x - 0.5) / 0.5).last_hidden_state  # [B*n, grid*grid, D]
+        if self.depth is not None and self.use_depth:
+            cams = self.depth_cams
+            d = self.depth_map(x.unflatten(0, (b, n))[:, cams].flatten(0, 1))  # [B*k, 1, H, W]
+            emb = self.depth_embed(d).flatten(2).transpose(1, 2)  # [B*k, grid*grid, D]
+            add = torch.zeros_like(tokens.unflatten(0, (b, n)))
+            add[:, cams] = emb.unflatten(0, (b, len(cams))).to(add.dtype)
+            tokens = tokens + add.flatten(0, 1)
         if self.pool > 1:
             g = int(math.isqrt(tokens.shape[1]))
             tokens = tokens.transpose(1, 2).unflatten(2, (g, g))
@@ -105,10 +159,11 @@ class NanoVLA(nn.Module):
         self.cam_embed = nn.Parameter(torch.zeros(len(cfg.cameras), 1, lm_dim))
         self.expert = ActionExpert(cfg, ctx_dim=lm_dim)
         if cfg.freeze_vision:
-            self.vision.requires_grad_(False)
+            self.vision.siglip.requires_grad_(False)
 
     def backbone_parameters(self):
-        return [p for m in (self.vision, self.lm) for p in m.parameters() if p.requires_grad]
+        """Pretrained weights (trained at lr * backbone_lr_scale). New fusion layers are head parameters."""
+        return [p for m in (*self.vision.pretrained_modules(), self.lm) for p in m.parameters() if p.requires_grad]
 
     def head_parameters(self):
         backbone = {id(p) for p in self.backbone_parameters()}
