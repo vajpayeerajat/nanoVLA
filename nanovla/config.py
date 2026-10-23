@@ -37,24 +37,35 @@ class Config:
     num_inference_steps: int = 10
 
     # --- training ---
-    run_name: str = "nanovla"
+    run_name: str = "baseline_siglip_6epochs"
     out_dir: str = "runs"
-    batch_size: int = 96
-    num_workers: int = 12
-    lr: float = 3e-4
-    backbone_lr_scale: float = 0.1  # pretrained vision/LM weights train at lr * scale
+    
+    # --- UPDATED BATCH CONFIGURATION ---
+    batch_size: int = 32               # New physical batch size
+    gradient_accumulation_steps: int = 3  # 32 x 3 = 96 Effective Batch Size
+    num_workers: int = 4               
+    
+    # --- TIMELINE FOR 6 EPOCHS ---
+    warmup_steps: int = 2500           
+    max_steps: int = 34375             # Reaches exactly 6 epochs over 550k frames
+    
+    # --- HYPERPARAMETERS ---
+    lr: float = 5e-5
+    backbone_lr_scale: float = 0.1     
     weight_decay: float = 1e-4
-    warmup_steps: int = 1000
-    max_steps: int = 20_000
-    grad_clip: float = 1.0
+    grad_clip: float = 1.0             
+    
+    # --- BALANCED ITERATION MONITORING ---
     log_interval: int = 50
-    val_interval: int = 250
+    val_interval: int = 500            
     val_batches: int = 20
-    save_interval: int = 500
-    save_dir: str = "/mnt/nas/rajat_ws/checkpoints/nanoVLA"  # checkpoints go to <save_dir>/<run_name>/
-    compile: bool = False
+    save_interval: int = 2000          
+    save_dir: str = "/mnt/nas/rajat_ws/checkpoints/nanoVLA"  
+    
+    compile: bool = False              
     seed: int = 0
-    resume: str = ""  # path to a checkpoint to resume from
+    resume: str = ""  
+
 
 
 def parse_args(argv=None) -> Config:
