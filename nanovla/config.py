@@ -41,7 +41,7 @@ class Config:
     backbone_lr_scale: float = 0.1  # pretrained vision/LM weights train at lr * scale
     weight_decay: float = 1e-4
     warmup_steps: int = 1000
-    max_steps: int = 5_000
+    max_steps: int = 20_000
     grad_clip: float = 1.0
     log_interval: int = 50
     val_interval: int = 250

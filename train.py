@@ -105,7 +105,10 @@ def main():
     train_model = torch.compile(model) if cfg.compile else model
 
     writer = SummaryWriter(os.path.join(run_dir, "tb"))
+    # Train and val loss overlaid in one chart (TensorBoard "Custom Scalars" tab) to spot overfitting.
+    writer.add_custom_scalars({"loss": {"train vs val": ["Multiline", ["loss/train", "loss/val"]]}})
     best_val = float("inf")
+    loss_sum, loss_n = 0.0, 0
     t0 = time.time()
     data_iter = iter(train_loader)
     while step < cfg.max_steps:
@@ -127,11 +130,14 @@ def main():
         step += 1
     
         lr = optimizer.param_groups[1]["lr"]
+        loss_sum, loss_n = loss_sum + loss.item(), loss_n + 1
         print(f"step {step:6d}/{cfg.max_steps}  | loss {loss.item():.4f} | grad {grad_norm.item():.2f} | lr {lr:.2e} ", end = '\r')
         if step % cfg.log_interval == 0:
             dt = time.time() - t0
             t0 = time.time()
-            writer.add_scalar("train/loss", loss.item(), step)
+            # Mean over the interval, so it is as smooth as the val loss (mean over val_batches).
+            writer.add_scalar("loss/train", loss_sum / loss_n, step)
+            loss_sum, loss_n = 0.0, 0
             writer.add_scalar("train/grad_norm", grad_norm.item(), step)
             writer.add_scalar("train/lr", lr, step)
             writer.add_scalar("train/steps_per_sec", cfg.log_interval / dt, step)
@@ -140,7 +146,7 @@ def main():
             metrics = evaluate(model, val_loader, normalizer, cfg, device)
             print(f"\n Val step {step:6d}/{cfg.max_steps} | val " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items()))
             for k, v in metrics.items():
-                writer.add_scalar(f"val/{k}", v, step)
+                writer.add_scalar("loss/val" if k == "loss" else f"val/{k}", v, step)
             if metrics["loss"] < best_val:
                 best_val = metrics["loss"]
                 save(os.path.join(cfg.save_dir, "best.pt"), model, optimizer, step, cfg)
