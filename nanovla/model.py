@@ -49,6 +49,11 @@ class VisionEncoder(nn.Module):
                 self.dino.requires_grad_(False)
             self.register_buffer("dino_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
             self.register_buffer("dino_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+            # F1 (add): siglip + proj(norm(dino)). proj starts at zero, so training starts from the SigLIP-only model.
+            self.dino_norm = nn.LayerNorm(self.dino_dim)
+            self.dino_proj = nn.Linear(self.dino_dim, self.out_dim)
+            nn.init.zeros_(self.dino_proj.weight)
+            nn.init.zeros_(self.dino_proj.bias)
 
     def pretrained_modules(self):
         return [m for m in (self.siglip, self.dino) if m is not None]
@@ -66,8 +71,8 @@ class VisionEncoder(nn.Module):
             return self.dino(pixel_values=x).last_hidden_state[:, self.dino_prefix :]
 
     def fuse(self, siglip_tokens, dino_tokens):
-        """[N, P, D_siglip], [N, P, D_dino] -> [N, P, out_dim]. Each early-fusion branch implements this."""
-        raise NotImplementedError("no fusion method on this branch")
+        """F1: add the projected DINO token to the SigLIP token of the same patch."""
+        return siglip_tokens + self.dino_proj(self.dino_norm(dino_tokens))
 
     def forward(self, images):
         b, n = images.shape[:2]
