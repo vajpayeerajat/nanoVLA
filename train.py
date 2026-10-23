@@ -66,11 +66,15 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     device = "cuda"
 
-    run_dir = os.path.join(cfg.out_dir, cfg.run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    with open(os.path.join(run_dir, "config.json"), "w") as f:
-        json.dump(dataclasses.asdict(cfg), f, indent=1)
-    shutil.copy(cfg.norm_stats, os.path.join(run_dir, "norm_stats.json"))
+    run_dir = os.path.join(cfg.out_dir, cfg.run_name)  # logs
+    ckpt_dir = os.path.join(cfg.save_dir, cfg.run_name)  # checkpoints, one folder per experiment
+    for d in (run_dir, ckpt_dir):
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "config.json"), "w") as f:
+            json.dump(dataclasses.asdict(cfg), f, indent=1)
+        # Policy.from_checkpoint reads the norm stats next to the checkpoint.
+        shutil.copy(cfg.norm_stats, os.path.join(d, "norm_stats.json"))
+    print(f"checkpoints -> {ckpt_dir}")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.lm_model)
     if tokenizer.pad_token is None:
@@ -149,11 +153,11 @@ def main():
                 writer.add_scalar("loss/val" if k == "loss" else f"val/{k}", v, step)
             if metrics["loss"] < best_val:
                 best_val = metrics["loss"]
-                save(os.path.join(cfg.save_dir, "best.pt"), model, optimizer, step, cfg)
+                save(os.path.join(ckpt_dir, "best.pt"), model, optimizer, step, cfg)
             t0 = time.time()
 
         if step % cfg.save_interval == 0 or step == cfg.max_steps:
-            save(os.path.join(cfg.save_dir, f"{step}.pt"), model, optimizer, step, cfg)
+            save(os.path.join(ckpt_dir, f"{step}.pt"), model, optimizer, step, cfg)
 
     writer.close()
 

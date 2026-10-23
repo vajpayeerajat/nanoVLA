@@ -47,7 +47,7 @@ class Config:
     val_interval: int = 250
     val_batches: int = 20
     save_interval: int = 500
-    save_dir : str = "/mnt/nas/rajat_ws/checkpoints/nanoVLA"
+    save_dir: str = "/mnt/nas/rajat_ws/checkpoints/nanoVLA"  # checkpoints go to <save_dir>/<run_name>/
     compile: bool = False
     seed: int = 0
     resume: str = ""  # path to a checkpoint to resume from
