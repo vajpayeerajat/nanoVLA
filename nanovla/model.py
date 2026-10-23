@@ -19,8 +19,16 @@ import torch.nn.functional as F
 from transformers import AutoModel, SiglipVisionModel
 
 
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
 class VisionEncoder(nn.Module):
-    """[B, n_cams, 3, H, W] uint8 -> [B, n_cams * tokens_per_cam, out_dim]."""
+    """[B, n_cams, 3, H, W] uint8 -> [B, n_cams * tokens_per_cam, out_dim].
+
+    SigLIP patch tokens, optionally fused patch by patch with a second encoder (DINOv3, `cfg.dino_model`) in `fuse`,
+    then average-pooled.
+    """
 
     def __init__(self, cfg):
         super().__init__()
@@ -30,11 +38,43 @@ class VisionEncoder(nn.Module):
         grid = cfg.image_size // self.siglip.config.patch_size
         self.tokens_per_cam = (grid // self.pool) ** 2
 
+        self.dino = None
+        if cfg.dino_model:
+            self.dino = AutoModel.from_pretrained(cfg.dino_model, dtype=torch.float32)
+            assert self.dino.config.patch_size == self.siglip.config.patch_size, "patch grids of SigLIP and DINO differ"
+            self.dino_prefix = 1 + self.dino.config.num_register_tokens  # CLS + registers come before the patches
+            self.dino_dim = self.dino.config.hidden_size
+            self.freeze_dino = cfg.freeze_dino
+            if self.freeze_dino:
+                self.dino.requires_grad_(False)
+            self.register_buffer("dino_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
+            self.register_buffer("dino_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
+
+    def pretrained_modules(self):
+        return [m for m in (self.siglip, self.dino) if m is not None]
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.dino is not None and self.freeze_dino:
+            self.dino.eval()  # a frozen encoder always runs in inference mode
+        return self
+
+    def dino_tokens(self, x):
+        """x: [N, 3, H, W] in [0, 1] -> final-norm DINO patch tokens [N, grid*grid, dino_dim]."""
+        x = (x - self.dino_mean) / self.dino_std
+        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_dino):
+            return self.dino(pixel_values=x).last_hidden_state[:, self.dino_prefix :]
+
+    def fuse(self, siglip_tokens, dino_tokens):
+        """[N, P, D_siglip], [N, P, D_dino] -> [N, P, out_dim]. Each early-fusion branch implements this."""
+        raise NotImplementedError("no fusion method on this branch")
+
     def forward(self, images):
         b, n = images.shape[:2]
         x = images.flatten(0, 1).float() / 255.0
-        x = (x - 0.5) / 0.5  # SigLIP normalization
-        tokens = self.siglip(pixel_values=x).last_hidden_state  # [B*n, grid*grid, D]
+        tokens = self.siglip(pixel_values=(x - 0.5) / 0.5).last_hidden_state  # [B*n, grid*grid, D]
+        if self.dino is not None:
+            tokens = self.fuse(tokens, self.dino_tokens(x))
         if self.pool > 1:
             g = int(math.isqrt(tokens.shape[1]))
             tokens = tokens.transpose(1, 2).unflatten(2, (g, g))
@@ -105,10 +145,11 @@ class NanoVLA(nn.Module):
         self.cam_embed = nn.Parameter(torch.zeros(len(cfg.cameras), 1, lm_dim))
         self.expert = ActionExpert(cfg, ctx_dim=lm_dim)
         if cfg.freeze_vision:
-            self.vision.requires_grad_(False)
+            self.vision.siglip.requires_grad_(False)
 
     def backbone_parameters(self):
-        return [p for m in (self.vision, self.lm) for p in m.parameters() if p.requires_grad]
+        """Pretrained weights (trained at lr * backbone_lr_scale). New fusion layers are head parameters."""
+        return [p for m in (*self.vision.pretrained_modules(), self.lm) for p in m.parameters() if p.requires_grad]
 
     def head_parameters(self):
         backbone = {id(p) for p in self.backbone_parameters()}

@@ -26,7 +26,11 @@ class Config:
     lm_model: str = "HuggingFaceTB/SmolLM2-135M"
     lm_num_layers: int = 16  # keep only the first N LM layers (SmolVLA-style); 0 = all
     image_pool: int = 2  # average-pool the 14x14 patch grid by this factor -> 49 tokens per camera
-    freeze_vision: bool = False
+    freeze_vision: bool = False  # freezes SigLIP only (fusion layers stay trainable)
+    # Second vision encoder fused with SigLIP patch by patch ("" = SigLIP only). DINOv3 B/16 at 224 gives the same
+    # 14x14 grid as SigLIP B/16, so patch i of both encoders covers the same image region.
+    dino_model: str = ""
+    freeze_dino: bool = True
     expert_dim: int = 512
     expert_layers: int = 6
     expert_heads: int = 8
